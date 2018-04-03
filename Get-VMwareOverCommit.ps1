@@ -7,6 +7,7 @@ Function Get-VMwareOverCommit {
             
             $VMhosts = Get-Cluster -Name $cluster.name | Get-VMHost 
             $Datastore = Get-Cluster -Name $cluster.name | Get-Datastore | Where-Object {$_.Name -like "*vsan*"}
+            If($Datastore){$vsan = $true}
 
             # CPU
             $ClusterPoweredOnvCPUs = (Get-VM -Location $cluster.name | Where-Object {$_.PowerState -eq "PoweredOn" } | Measure-Object NumCpu -Sum).Sum
@@ -17,9 +18,11 @@ Function Get-VMwareOverCommit {
             $ClusterPhysRAM = [Math]::Round(($VMhosts | Measure-Object MemoryTotalGB -Sum).Sum, 2)
             
             # Storage
-            $ClusterCapacity = [Math]::Round(((Get-Datastore $Datastore.name).CapacityGB | Measure-Object -Sum).Sum, 2)
-            $ClusterUsedSpace = [Math]::Round(((Get-VM -Datastore $Datastore.name).UsedSpaceGB | Measure-Object -Sum).Sum, 2)
-            $ClusterProvisionedSpace = [Math]::Round(((Get-VM -Datastore $Datastore.name).ProvisionedSpaceGB | Measure-Object -Sum).Sum, 2)
+            if($vsan -eq $true){
+                $ClusterCapacity = [Math]::Round(((Get-Datastore $Datastore.name).CapacityGB | Measure-Object -Sum).Sum, 2)
+                $ClusterUsedSpace = [Math]::Round(((Get-VM -Datastore $Datastore.name).UsedSpaceGB | Measure-Object -Sum).Sum, 2)
+                $ClusterProvisionedSpace = [Math]::Round(((Get-VM -Datastore $Datastore.name).ProvisionedSpaceGB | Measure-Object -Sum).Sum, 2)
+            }
 
             #OvercommitProperties
             $ClusterOvercommitCPUProperties = [ordered]@{
@@ -37,7 +40,7 @@ Function Get-VMwareOverCommit {
                     'PoweredOn vRAM (GB)'=if ($ClusterPoweredOnvRAM) {$ClusterPoweredOnvRAM} Else { 0 -as [int] }
                     'vRAM/Physical RAM ratio'=if ($ClusterPoweredOnvRAM) {[Math]::Round(($ClusterPoweredOnvRAM / $ClusterPhysRAM), 3)} Else { $null }
                     'RAM Overcommit (%)'=if ($ClusterPoweredOnvRAM) {[Math]::Round(100*(( $ClusterPoweredOnvRAM - $ClusterPhysRAM) / $ClusterPhysRAM), 2)} Else { $null }
-                    }      
+                    }
             $ClusterOvercommitStorageProperties = [ordered]@{
                     'Cluster Name'=$cluster.name                    
                     'Datastore Cluster'=$Datastore
@@ -112,20 +115,23 @@ Function Connect-VC {
 #################################
 # Main Code
 #################################
-If(!(Get-Module | Where {$_.Name -like "*VMWare*"})){$VMware = get-module -ListAvailable | Where {$_.Name -like "*vmware*"};foreach($i in $Vmware){Import-Module $i.name}}
+If(!(Get-Module | Where {$_.Name -like "*VMWare*"})){Write-Host "Loading VMware Modules...";$VMware = get-module -ListAvailable | Where {$_.Name -like "*vmware*"};foreach($i in $Vmware){Import-Module $i.name}}
 $Creds = Get-Credential -Message "Please enter system admin username (<USERNAME>@uk.wal-mart.com) and password"
 $vcenter = Read-Host "Please enter the vcenter to connect to"
-$Details = $true
+#Full details?
+$Caption = “Please select an option” ;$Message = “Do you want to show all details? [Yes or No]” ;$Choices = [System.Management.Automation.Host.ChoiceDescription[]] @(“&Yes”, “&No”) 
+[int]$DefaultChoice = 0;$ChoiceRTN = $Host.ui.PromptForChoice($Caption, $Message, $Choices, $DefaultChoice);switch ($choiceRTN) { 0 {$Details = $true};1 {}}
+
 $Session = Connect-VC -vcenter $vcenter -vcred $creds
 $ClusterTargets = Get-ClusterTargets
 $Cluster = Get-ClusterTarget -ClusterTargets $ClusterTargets
 $ClusterOvercommitObjCPU,$ClusterOvercommitObjMEM,$ClusterOvercommitObjStorage = Get-VMwareOverCommit -Cluster $Cluster
 
 #Show all details
-If($Details){
+If($Details -eq $true){
     Write-Host "Complete Cluster Details" -ForegroundColor Cyan
     Write-Host "------------------------" -ForegroundColor Cyan
-    Write-Host "`nCPU:"
+    Write-Host "CPU:"
     $ClusterOvercommitObjCPU
     Write-Host "`nMemory:"
     $ClusterOvercommitObjMEM
@@ -156,4 +162,3 @@ If($RAMcolor -ne "Green"){ Write-Host "`nMemory Details:";$ClusterOvercommitObjM
 If($Storagecolor -ne "Green"){Write-Host "`nStorage Details:"$ClusterOvercommitObjStorage}
 Disconnect-VIServer * -Confirm:$False -Force
 pause
-
