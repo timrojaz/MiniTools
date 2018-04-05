@@ -3,7 +3,7 @@
 #################################
 
 Function Get-VMwareOverCommit {
-            Param($Cluster)
+            Param($Cluster,[switch]$Details)
             
             $VMhosts = Get-Cluster -Name $cluster.name | Get-VMHost 
             $Datastore = Get-Cluster -Name $cluster.name | Get-Datastore | Where-Object {$_.Name -like "*vsan*"}
@@ -55,7 +55,49 @@ Function Get-VMwareOverCommit {
             $ClusterOvercommitObjCPU = New-Object -TypeName PSObject -Property $ClusterOvercommitCPUProperties
             $ClusterOvercommitObjMEM = New-Object -TypeName PSObject -Property $ClusterOvercommitMEMProperties
             $ClusterOvercommitObjStorage = New-Object -TypeName PSObject -Property $ClusterOvercommitStorageProperties
-            $ClusterOvercommitObjCPU,$ClusterOvercommitObjMEM,$ClusterOvercommitObjStorage
+            
+            #Color for summary output
+            If($ClusterOvercommitObjCPU.'vCPU/Core ratio' -lt "0.75"){$CPUcolor = "Green"}
+            Elseif($ClusterOvercommitObjCPU.'vCPU/Core ratio' -ge "0.75" -and $ClusterOvercommitObjCPU.'vCPU/Core ratio' -lt "0.90"){$CPUcolor = "Yellow"}
+            Elseif($ClusterOvercommitObjCPU.'vCPU/Core ratio'-ge "0.90"){$CPUcolor = "Red"}
+            If($ClusterOvercommitObjMEM.'vRAM/Physical RAM ratio' -lt "0.75"){$RAMcolor = "Green"}
+            Elseif($ClusterOvercommitObjMEM.'vRAM/Physical RAM ratio' -ge "0.75" -and $ClusterOvercommitObjMEM.'vRAM/Physical RAM ratio' -lt "0.90"){$RAMcolor = "Yellow"}
+            Elseif($ClusterOvercommitObjMEM.'vRAM/Physical RAM ratio'-ge "0.90"){$RAMcolor = "Red"}
+            If($ClusterOvercommitObjStorage.'Provisioned / Capacity ratio' -lt "0.75"){$Storagecolor = "Green"}
+            Elseif($ClusterOvercommitObjStorage.'Provisioned / Capacity ratio' -ge "0.75" -and $ClusterOvercommitObjStorage.'Provisioned / Capacity ratio' -lt "0.90"){$Storagecolor = "Yellow"}
+            Elseif($ClusterOvercommitObjStorage.'Provisioned / Capacity ratio'-ge "0.90"){$Storagecolor = "Red"}
+
+            Clear-Host
+            Write-Host "[$vcenter]\$($Cluster.Name)`n" -ForegroundColor Black  -BackgroundColor White
+            
+            #Show all details
+            If($Details){
+                Write-Host "Complete Cluster Details" -ForegroundColor Cyan
+                Write-Host "------------------------" -ForegroundColor Cyan
+                Write-Host "CPU:" -ForegroundColor DarkBlue  -BackgroundColor White
+                $ClusterOvercommitObjCPU | Format-Table -Autosize
+                Write-Host "Memory:" -ForegroundColor DarkBlue -BackgroundColor White
+                $ClusterOvercommitObjMEM | Format-Table -Autosize
+                Write-Host "Storage:" -ForegroundColor DarkBlue -BackgroundColor White
+                $ClusterOvercommitObjStorage | Format-Table -Autosize
+                
+            }
+            Else{
+                #Display all information for anything not Green
+                Write-Host "Cluster Details for OverCommit" -ForegroundColor Cyan
+                Write-Host "------------------------------" -ForegroundColor Cyan
+                If($CPUcolor -ne "Green"){Write-Host "CPU:" -ForegroundColor DarkBlue -BackgroundColor White;$ClusterOvercommitObjCPU | Format-Table -Autosize}
+                If($RAMcolor -ne "Green"){ Write-Host "Memory:" -ForegroundColor DarkBlue -BackgroundColor White;$ClusterOvercommitObjMEM | Format-Table -Autosize}
+                If($Storagecolor -ne "Green"){Write-Host "Storage:" -ForegroundColor DarkBlue -BackgroundColor White;$ClusterOvercommitObjStorage | Format-Table -Autosize}
+            }
+
+            #Display Summary
+            Write-Host "Summary: "
+            Write-Host "vCPU/Core Ratio: [" -NoNewLine; Write-Host "$($ClusterOvercommitObjCPU."vCPU/Core ratio")" -ForegroundColor $CPUcolor -NoNewline; Write-Host "]" 
+            Write-Host "vRAM/Physical RAM ratio: [" -NoNewLine; Write-Host "$($ClusterOvercommitObjMEM."vRAM/Physical RAM ratio")" -ForegroundColor $RAMcolor -NoNewline; Write-Host "]"
+            Write-Host "Provisioned / Capacity ratio: [" -NoNewLine; Write-Host "$($ClusterOvercommitObjStorage."Provisioned / Capacity ratio")" -ForegroundColor $StorageColor -NoNewline; Write-Host "]"
+
+            
 }
 
 Function Get-ClusterTargets {
@@ -120,45 +162,14 @@ $Creds = Get-Credential -Message "Please enter system admin username (<USERNAME>
 $vcenter = Read-Host "Please enter the vcenter to connect to"
 #Full details?
 $Caption = “Please select an option” ;$Message = “Do you want to show all details? [Yes or No]” ;$Choices = [System.Management.Automation.Host.ChoiceDescription[]] @(“&Yes”, “&No”) 
-[int]$DefaultChoice = 0;$ChoiceRTN = $Host.ui.PromptForChoice($Caption, $Message, $Choices, $DefaultChoice);switch ($choiceRTN) { 0 {$Details = $true};1 {}}
+[int]$DefaultChoice = 0;$ChoiceRTN = $Host.ui.PromptForChoice($Caption, $Message, $Choices, $DefaultChoice);switch ($choiceRTN) { 0 {$RunDetails = $true};1 {$RunDetails = $false}}
 
 $Session = Connect-VC -vcenter $vcenter -vcred $creds
+If(!$Session){exit}
 $ClusterTargets = Get-ClusterTargets
 $Cluster = Get-ClusterTarget -ClusterTargets $ClusterTargets
-$ClusterOvercommitObjCPU,$ClusterOvercommitObjMEM,$ClusterOvercommitObjStorage = Get-VMwareOverCommit -Cluster $Cluster
+IF($RunDetails -eq $true){Get-VMwareOverCommit -Cluster $Cluster -Details}
+Else{Get-VMwareOverCommit -Cluster $Cluster}
 
-#Show all details
-If($Details -eq $true){
-    Write-Host "Complete Cluster Details" -ForegroundColor Cyan
-    Write-Host "------------------------" -ForegroundColor Cyan
-    Write-Host "CPU:"
-    $ClusterOvercommitObjCPU
-    Write-Host "`nMemory:"
-    $ClusterOvercommitObjMEM
-    Write-Host "`nStorage:"
-    $ClusterOvercommitObjStorage
-}
-
-#Color for summary output
-If($ClusterOvercommitObjCPU.'vCPU/Core ratio' -lt "0.75"){$CPUcolor = "Green"}
-Elseif($ClusterOvercommitObjCPU.'vCPU/Core ratio' -ge "0.75" -and $ClusterOvercommitObjCPU.'vCPU/Core ratio' -lt "0.90"){$CPUcolor = "Yellow"}
-Elseif($ClusterOvercommitObjCPU.'vCPU/Core ratio'-ge "0.90"){$CPUcolor = "Red"}
-If($ClusterOvercommitObjMEM.'vRAM/Physical RAM ratio' -lt "0.75"){$RAMcolor = "Green"}
-Elseif($ClusterOvercommitObjMEM.'vRAM/Physical RAM ratio' -ge "0.75" -and $ClusterOvercommitObjMEM.'vRAM/Physical RAM ratio' -lt "0.90"){$RAMcolor = "Yellow"}
-Elseif($ClusterOvercommitObjMEM.'vRAM/Physical RAM ratio'-ge "0.90"){$RAMcolor = "Red"}
-If($ClusterOvercommitObjStorage.'Provisioned / Capacity ratio' -lt "0.75"){$Storagecolor = "Green"}
-Elseif($ClusterOvercommitObjStorage.'Provisioned / Capacity ratio' -ge "0.75" -and $ClusterOvercommitObjStorage.'Provisioned / Capacity ratio' -lt "0.90"){$Storagecolor = "Yellow"}
-Elseif($ClusterOvercommitObjStorage.'Provisioned / Capacity ratio'-ge "0.90"){$Storagecolor = "Red"}
-
-#Display Summary
-Write-Host "Summary: "
-Write-Host "vCPU/Core Ratio: [" -NoNewLine; Write-Host "$($ClusterOvercommitObjCPU."vCPU/Core ratio")" -ForegroundColor $CPUcolor -NoNewline; Write-Host "]" 
-Write-Host "vRAM/Physical RAM ratio: [" -NoNewLine; Write-Host "$($ClusterOvercommitObjMEM."vRAM/Physical RAM ratio")" -ForegroundColor $RAMcolor -NoNewline; Write-Host "]"
-Write-Host "Provisioned / Capacity ratio: [" -NoNewLine; Write-Host "$($ClusterOvercommitObjStorage."Provisioned / Capacity ratio")" -ForegroundColor $StorageColor -NoNewline; Write-Host "]"
-
-#Display all information for anything not Green
-If($CPUcolor -ne "Green"){Write-Host "`nCPU Details:";$ClusterOvercommitObjCPU}
-If($RAMcolor -ne "Green"){ Write-Host "`nMemory Details:";$ClusterOvercommitObjMEM}
-If($Storagecolor -ne "Green"){Write-Host "`nStorage Details:"$ClusterOvercommitObjStorage}
 Disconnect-VIServer * -Confirm:$False -Force
 pause
