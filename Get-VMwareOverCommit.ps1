@@ -6,20 +6,37 @@ Function Get-VMwareOverCommit {
             Param($Cluster,[switch]$Details)
             
             $VMhosts = Get-Cluster -Name $cluster.name | Get-VMHost 
-            $Datastore = Get-Cluster -Name $cluster.name | Get-Datastore | Where-Object {$_.Name -like "*vsan*"}
-            If($Datastore){$vsan = $true}
+            $Datastore = Get-Cluster -Name $cluster.name | Get-Datastore | Where-Object {$_.Type -like "vsan"}
+            If(!$Datastore){
+                $DSTargets = Get-DSTargets -ClusterTarget $Cluster
+                $Datastore = Get-DSTarget -DSTargets $DSTargets
+            }
 
             # CPU
             $ClusterPoweredOnvCPUs = (Get-VM -Location $cluster.name | Where-Object {$_.PowerState -eq "PoweredOn" } | Measure-Object NumCpu -Sum).Sum
             $ClusterCPUCores = ($VMhosts | Measure-Object NumCpu -Sum).Sum
+            # Preparing a collection to store information for each individual ESXi host
+            $CPU = @()
+            Foreach($VMhost in $VMhosts){$CPU += (Get-VM -Location $VMhost | Measure-Object NumCpu -Sum).Sum}
+            $TotalvCPU = ($CPU | Measure-Object -Sum).Sum
             
             # Memory
             $ClusterPoweredOnvRAM = [Math]::Round((Get-VM -Location $cluster.name | Where-Object {$_.PowerState -eq "PoweredOn" } | Measure-Object MemoryGB -Sum).Sum, 2)
             $ClusterPhysRAM = [Math]::Round(($VMhosts | Measure-Object MemoryTotalGB -Sum).Sum, 2)
-            
+            $RAM = @()
+            Foreach ($VMhost in $VMhosts){$RAM += [Math]::Round((Get-VM -Location $VMhost | Measure-Object MemoryGB -Sum).Sum, 2)}
+            $TotalvRAM = ($RAM | Measure-Object -Sum).Sum
+
             # Storage
-            if($vsan -eq $true){
-                $ClusterCapacity = [Math]::Round(((Get-Datastore $Datastore.name).CapacityGB | Measure-Object -Sum).Sum, 2)
+            if($datastore.type -ne "vsan"){
+                $ClusterUsableCapacity = $ClusterCapacity = [Math]::Round(((Get-Datastore $Datastore.name).CapacityGB | Measure-Object -Sum).Sum, 2)
+                $ClusterUsedSpace = [Math]::Round(((Get-VM -Datastore $Datastore.name).UsedSpaceGB | Measure-Object -Sum).Sum, 2)
+                $ClusterProvisionedSpace = [Math]::Round(((Get-VM -Datastore $Datastore.name).ProvisionedSpaceGB | Measure-Object -Sum).Sum, 2)
+            }
+            #WARNING: VSAN Calculation is definitely a work in progress!
+            else{
+                $ClusterCapacity = (Get-Datastore $Datastore.name).CapacityGB
+                $ClusterUsableCapacity = ((Get-Datastore $Datastore.name).CapacityGB * 0.7) / 2
                 $ClusterUsedSpace = [Math]::Round(((Get-VM -Datastore $Datastore.name).UsedSpaceGB | Measure-Object -Sum).Sum, 2)
                 $ClusterProvisionedSpace = [Math]::Round(((Get-VM -Datastore $Datastore.name).ProvisionedSpaceGB | Measure-Object -Sum).Sum, 2)
             }
@@ -28,7 +45,7 @@ Function Get-VMwareOverCommit {
             $ClusterOvercommitCPUProperties = [ordered]@{
                     'Cluster Name'=$cluster.name                    
                     'CPU Cores'=$ClusterCPUCores
-                    'Total vCPUs'=($OvercommitInfoCollection."Total vCPUs" | Measure-Object -Sum).Sum
+                    'Total vCPUs'=$TotalvCPU
                     'PoweredOn vCPUs'=if ($ClusterPoweredOnvCPUs) {$ClusterPoweredOnvCPUs} Else { 0 -as [int] }
                     'vCPU/Core ratio'=if ($ClusterPoweredOnvCPUs) {[Math]::Round(($ClusterPoweredOnvCPUs / $ClusterCPUCores), 3)} Else { $null }
                     'CPU Overcommit (%)'=if ($ClusterPoweredOnvCPUs) {[Math]::Round(100*(( $ClusterPoweredOnvCPUs - $ClusterCPUCores) / $ClusterCPUCores), 3)} Else { $null }
@@ -36,22 +53,22 @@ Function Get-VMwareOverCommit {
             $ClusterOvercommitMEMProperties = [ordered]@{
                     'Cluster Name'=$cluster.name                    
                     'Physical RAM (GB)'=$ClusterPhysRAM
-                    'Total vRAM (GB)'=[Math]::Round(($OvercommitInfoCollection."Total vRAM (GB)" | Measure-Object -Sum).Sum, 2)
+                    'Total vRAM (GB)'=$TotalvRAM
                     'PoweredOn vRAM (GB)'=if ($ClusterPoweredOnvRAM) {$ClusterPoweredOnvRAM} Else { 0 -as [int] }
                     'vRAM/Physical RAM ratio'=if ($ClusterPoweredOnvRAM) {[Math]::Round(($ClusterPoweredOnvRAM / $ClusterPhysRAM), 3)} Else { $null }
                     'RAM Overcommit (%)'=if ($ClusterPoweredOnvRAM) {[Math]::Round(100*(( $ClusterPoweredOnvRAM - $ClusterPhysRAM) / $ClusterPhysRAM), 2)} Else { $null }
                     }
             $ClusterOvercommitStorageProperties = [ordered]@{
                     'Cluster Name'=$cluster.name                    
-                    'Datastore Cluster'=$Datastore
+                    'Datastore Cluster'=$Datastore.name
                     'Capacity (GB)'=$ClusterCapacity
+                    'Usable Capacity (GB)' = $ClusterUsableCapacity
                     'Used Space (GB)'=if ($ClusterUsedSpace) { $ClusterUsedSpace } Else { 0 -as [int] }
                     'Provisioned Space (GB)'=if ($ClusterProvisionedSpace) { $ClusterProvisionedSpace } Else { 0 -as [int] }
-                    'Provisioned / Capacity ratio'=if ($ClusterProvisionedSpace) {[Math]::Round(($ClusterProvisionedSpace / $ClusterCapacity), 3)} Else { $null }
-                    'Storage Overcommit (%)'=if ($ClusterProvisionedSpace) {[Math]::Round(100*(( $ClusterProvisionedSpace - $ClusterCapacity) / $ClusterCapacity), 2)} Else { $null }
+                    'Provisioned / Capacity ratio'=if ($ClusterProvisionedSpace) {[Math]::Round(($ClusterProvisionedSpace / $ClusterUsableCapacity), 3)} Else { $null }
+                    'Storage Overcommit (%)'=if ($ClusterProvisionedSpace) {[Math]::Round(100*(( $ClusterProvisionedSpace - $ClusterUsableCapacity) / $ClusterUsableCapacity), 2)} Else { $null }
                     }      
 
-            $ClusterOvercommitObj = New-Object -TypeName PSObject -Property $ClusterOvercommitProperties
             $ClusterOvercommitObjCPU = New-Object -TypeName PSObject -Property $ClusterOvercommitCPUProperties
             $ClusterOvercommitObjMEM = New-Object -TypeName PSObject -Property $ClusterOvercommitMEMProperties
             $ClusterOvercommitObjStorage = New-Object -TypeName PSObject -Property $ClusterOvercommitStorageProperties
@@ -154,6 +171,40 @@ Function Connect-VC {
     Return $VCSession
 }#End Connect-VC
 
+#Get-DSTargets Function to list available datastores available on a cluster
+Function Get-DSTargets {
+    Param($ClusterTarget)
+    Write-Host "Getting available datastores (Please wait)..."
+    $DSTargets = Get-Cluster $ClusterTarget.Name | Get-Datastore
+    Return $DSTargets
+}#End Get-DSTargets
+
+#Get-DSTarget Function to pick datastore from available
+Function Get-DSTarget {
+    Param($DSTargets)
+    $PickList = @()
+    $Count = 1
+    ForEach ($DSTarget in ($DSTargets | Select-Object Name, FreeSpaceGB, CapacityGB)) {
+        $PickItem = "" | Select-Object Number, Name, FreeSpaceGB, CapacityGB
+        $PickItem.Number = $Count++
+        $PickItem.Name = $DSTarget.Name
+        $PickItem.FreeSpaceGB = [Math]::Round($DSTarget.FreeSpaceGB)
+        $PickItem.CapacityGB = [Math]::Round($DSTarget.CapacityGB)
+        $PickList += $PickItem
+    }
+    $PickList | Format-Table Number, Name, FreeSpaceGB, CapacityGB -AutoSize | Out-Host
+    $Length = ([string]$PickList.Count).Length
+    If ($Length -eq 1) {$Length = 2}
+    Do {
+        $PickNum = Read-Host "Please select the number of the Target Datastore"
+        If ($Picknum.length -lt $Length) {Do {$PickNum = "0$PickNum"}Until($Picknum.Length -eq $Length)}
+    }
+    Until(($PickList | Where-Object {$_.Number -eq $PickNum}) -ne $null)
+    $DSTarget = $PickList | Where-Object {$_.Number -eq $PickNum}
+    Return $DSTarget
+}#End Get-DSTarget
+
+
 #################################
 # Main Code
 #################################
@@ -161,7 +212,7 @@ If(!(Get-Module | Where {$_.Name -like "*VMWare*"})){Write-Host "Loading VMware 
 $Creds = Get-Credential -Message "Please enter system admin username (<USERNAME>@uk.wal-mart.com) and password"
 $vcenter = Read-Host "Please enter the vcenter to connect to"
 #Full details?
-$Caption = “Please select an option” ;$Message = “Do you want to show all details? [Yes or No]” ;$Choices = [System.Management.Automation.Host.ChoiceDescription[]] @(“&Yes”, “&No”) 
+$Caption = “Please select an option” ;$Message = “Do you want to show all details or just a summary” ;$Choices = [System.Management.Automation.Host.ChoiceDescription[]] @(“&Details”, “&Summary”) 
 [int]$DefaultChoice = 0;$ChoiceRTN = $Host.ui.PromptForChoice($Caption, $Message, $Choices, $DefaultChoice);switch ($choiceRTN) { 0 {$RunDetails = $true};1 {$RunDetails = $false}}
 
 $Session = Connect-VC -vcenter $vcenter -vcred $creds
