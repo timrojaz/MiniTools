@@ -11,6 +11,26 @@ Function Get-VMwareOverCommit {
                 $DSTargets = Get-DSTargets -ClusterTarget $Cluster
                 $Datastore = Get-DSTarget -DSTargets $DSTargets
             }
+            ElseIf($Datastore){
+                Write-Host "Getting vSAN Storage policy..." -NoNewline
+                $Policy = Get-SpbmStoragePolicy | Where {$_.Name -like "*SAN Default*"}
+                If(!$Policy){
+                    Write-Host "No Policy found!" -ForegroundColor Red
+                    Exit
+                }
+                Else{
+                    Write-Host "Found '$($Policy.Name)'" -ForegroundColor Green
+                    $PolicyFTT = (($Policy.AnyofRuleSets | out-string).split(",") | Where-Object {$_ -like "*FailuresToTolerate*"}) -replace '\D+'
+                    $PolicyReplicaPreference = (($Policy.AnyofRuleSets | out-string).split(",") | Where-Object {$_ -like "*replicaPreference*"})
+                    If(!$PolicyReplicaPreference -or $PolicyReplicaPreference -like "*RAID-1 (Mirroring) - Performance*"){$PolicyReplicaPreference = 1}
+                    Elseif($PolicyReplicaPreference -like "*RAID-5/6 (Erasure Coding) - Capacity*"){$PolicyReplicaPreference = 2}
+                    Else{
+                        Write-Host "ERROR: Found Policy Replica Preference, but it did not match either 'RAID-1 (Mirroring) - Performance' or 'RAID-5/6 (Erasure Coding) - Capacity'" -ForegroundColor Red
+                        Write-Host "ERROR: Policy Replica Preference details:" -ForegroundColor Red
+                        Write-Host $PolicyReplicaPreference -ForegroundColor Red
+                    }
+                }
+            }
 
             # CPU
             $ClusterPoweredOnvCPUs = (Get-VM -Location $cluster.name | Where-Object {$_.PowerState -eq "PoweredOn" } | Measure-Object NumCpu -Sum).Sum
@@ -36,9 +56,12 @@ Function Get-VMwareOverCommit {
             #WARNING: VSAN Calculation is definitely a work in progress!
             else{
                 $ClusterCapacity = (Get-Datastore $Datastore.name).CapacityGB
-                $ClusterUsableCapacity = ((Get-Datastore $Datastore.name).CapacityGB * 0.7) / 2
                 $ClusterUsedSpace = [Math]::Round(((Get-VM -Datastore $Datastore.name).UsedSpaceGB | Measure-Object -Sum).Sum, 2)
                 $ClusterProvisionedSpace = [Math]::Round(((Get-VM -Datastore $Datastore.name).ProvisionedSpaceGB | Measure-Object -Sum).Sum, 2)
+                If($PolicyFTT -eq 1 -and $PolicyReplicaPreference -eq 1){$ClusterUsableCapacity = ((Get-Datastore $Datastore.name).CapacityGB * 0.7) * 0.5}
+                Elseif($PolicyFTT -eq 2 -and $PolicyReplicaPreference -eq 1){$ClusterUsableCapacity = ((Get-Datastore $Datastore.name).CapacityGB * 0.7) * (1/3)}
+                ElseIf($PolicyFTT -eq 1 -and $PolicyReplicaPreference -eq 2){$ClusterUsableCapacity = ((Get-Datastore $Datastore.name).CapacityGB * 0.7) * 0.75}
+                ElseIf($PolicyFTT -eq 2 -and $PolicyReplicaPreference -eq 2){$ClusterUsableCapacity = ((Get-Datastore $Datastore.name).CapacityGB * 0.7) * (2/3)}
             }
 
             #OvercommitProperties
@@ -91,6 +114,14 @@ Function Get-VMwareOverCommit {
             If($Details){
                 Write-Host "Complete Cluster Details" -ForegroundColor Cyan
                 Write-Host "------------------------" -ForegroundColor Cyan
+                If($datastore.type -eq "vsan"){
+                    Write-Host "Storage Policy: " -NoNewLine; Write-Host "'$($Policy.Name)'" -ForegroundColor Cyan
+                    Write-Host "Failures to Tolerate: " -NoNewLine; Write-Host $PolicyFTT -ForegroundColor Cyan
+                    Write-Host "Replica Preference: " -NoNewLine
+                    If($PolicyReplicaPreference -eq 1){Write-Host "RAID-1 (Mirroring) - Performance" -ForegroundColor Cyan}    
+                    Elseif($PolicyReplicaPreference -eq 2){Write-Host "RAID-5/6 (Erasure Coding) - Capacity" -ForegroundColor Cyan} 
+                    Write-Host `n
+                }
                 Write-Host "CPU:" -ForegroundColor DarkBlue  -BackgroundColor White
                 $ClusterOvercommitObjCPU | Format-Table -Autosize
                 Write-Host "Memory:" -ForegroundColor DarkBlue -BackgroundColor White
@@ -112,9 +143,7 @@ Function Get-VMwareOverCommit {
             Write-Host "Summary: "
             Write-Host "vCPU/Core Ratio: [" -NoNewLine; Write-Host "$($ClusterOvercommitObjCPU."vCPU/Core ratio")" -ForegroundColor $CPUcolor -NoNewline; Write-Host "]" 
             Write-Host "vRAM/Physical RAM ratio: [" -NoNewLine; Write-Host "$($ClusterOvercommitObjMEM."vRAM/Physical RAM ratio")" -ForegroundColor $RAMcolor -NoNewline; Write-Host "]"
-            Write-Host "Provisioned / Capacity ratio: [" -NoNewLine; Write-Host "$($ClusterOvercommitObjStorage."Provisioned / Capacity ratio")" -ForegroundColor $StorageColor -NoNewline; Write-Host "]"
-
-            
+            Write-Host "Provisioned / Capacity ratio: [" -NoNewLine; Write-Host "$($ClusterOvercommitObjStorage."Provisioned / Capacity ratio")" -ForegroundColor $StorageColor -NoNewline; Write-Host "]"      
 }
 
 Function Get-ClusterTargets {
@@ -213,7 +242,7 @@ $Creds = Get-Credential -Message "Please enter system admin username (<USERNAME>
 $vcenter = Read-Host "Please enter the vcenter to connect to"
 #Full details?
 $Caption = “Please select an option” ;$Message = “Do you want to show all details or just a summary” ;$Choices = [System.Management.Automation.Host.ChoiceDescription[]] @(“&Details”, “&Summary”) 
-[int]$DefaultChoice = 0;$ChoiceRTN = $Host.ui.PromptForChoice($Caption, $Message, $Choices, $DefaultChoice);switch ($choiceRTN) { 0 {$RunDetails = $true};1 {$RunDetails = $false}}
+[int]$DefaultChoice = 1;$ChoiceRTN = $Host.ui.PromptForChoice($Caption, $Message, $Choices, $DefaultChoice);switch ($choiceRTN) { 0 {$RunDetails = $true};1 {$RunDetails = $false}}
 
 $Session = Connect-VC -vcenter $vcenter -vcred $creds
 If(!$Session){exit}
