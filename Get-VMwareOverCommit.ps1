@@ -5,6 +5,7 @@
 Function Get-VMwareOverCommit {
             Param($Cluster,[switch]$Details)
             
+            Write-Host "Starting process for evaluating cluster..." 
             $VMhosts = Get-Cluster -Name $cluster.name | Get-VMHost 
             $Datastore = Get-Cluster -Name $cluster.name | Get-Datastore | Where-Object {$_.Type -like "vsan"}
             If(!$Datastore){
@@ -32,6 +33,7 @@ Function Get-VMwareOverCommit {
                 }
             }
 
+            Write-Host "Collating data from cluster..." -NoNewline
             # CPU
             $ClusterPoweredOnvCPUs = (Get-VM -Location $cluster.name | Where-Object {$_.PowerState -eq "PoweredOn" } | Measure-Object NumCpu -Sum).Sum
             $ClusterCPUCores = ($VMhosts | Measure-Object NumCpu -Sum).Sum
@@ -95,7 +97,8 @@ Function Get-VMwareOverCommit {
             $ClusterOvercommitObjCPU = New-Object -TypeName PSObject -Property $ClusterOvercommitCPUProperties
             $ClusterOvercommitObjMEM = New-Object -TypeName PSObject -Property $ClusterOvercommitMEMProperties
             $ClusterOvercommitObjStorage = New-Object -TypeName PSObject -Property $ClusterOvercommitStorageProperties
-            
+            Write-Host "Done!" -ForegroundColor Green
+
             #Color for summary output
             If($ClusterOvercommitObjCPU.'vCPU/Core ratio' -lt "0.75"){$CPUcolor = "Green"}
             Elseif($ClusterOvercommitObjCPU.'vCPU/Core ratio' -ge "0.75" -and $ClusterOvercommitObjCPU.'vCPU/Core ratio' -lt "0.90"){$CPUcolor = "Yellow"}
@@ -134,6 +137,14 @@ Function Get-VMwareOverCommit {
                 #Display all information for anything not Green
                 Write-Host "Cluster Details for OverCommit" -ForegroundColor Cyan
                 Write-Host "------------------------------" -ForegroundColor Cyan
+                If($datastore.type -eq "vsan"){
+                    Write-Host "Storage Policy: " -NoNewLine; Write-Host "'$($Policy.Name)'" -ForegroundColor Cyan
+                    Write-Host "Failures to Tolerate: " -NoNewLine; Write-Host $PolicyFTT -ForegroundColor Cyan
+                    Write-Host "Replica Preference: " -NoNewLine
+                    If($PolicyReplicaPreference -eq 1){Write-Host "RAID-1 (Mirroring) - Performance" -ForegroundColor Cyan}    
+                    Elseif($PolicyReplicaPreference -eq 2){Write-Host "RAID-5/6 (Erasure Coding) - Capacity" -ForegroundColor Cyan} 
+                    Write-Host `n
+                }
                 If($CPUcolor -ne "Green"){Write-Host "CPU:" -ForegroundColor DarkBlue -BackgroundColor White;$ClusterOvercommitObjCPU | Format-Table -Autosize}
                 If($RAMcolor -ne "Green"){ Write-Host "Memory:" -ForegroundColor DarkBlue -BackgroundColor White;$ClusterOvercommitObjMEM | Format-Table -Autosize}
                 If($Storagecolor -ne "Green"){Write-Host "Storage:" -ForegroundColor DarkBlue -BackgroundColor White;$ClusterOvercommitObjStorage | Format-Table -Autosize}
